@@ -587,6 +587,12 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 
     internal_ptr(internal_ptr const &) = delete;
+    internal_ptr(internal_ptr&& other):
+        detail::internal_ptr_base(other.base,other.header), ptr(other.ptr){
+        base->register_ptr(this);
+        other.ptr=nullptr;
+        other.header=nullptr;
+    }
 
     internal_ptr &operator=(root_ptr<T> const &p) {
         reset();

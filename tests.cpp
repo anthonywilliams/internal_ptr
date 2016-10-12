@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <iostream>
 #include "internal_ptr.hpp"
+#include <vector>
 
 struct Counted{
     Counted(){
@@ -615,6 +616,31 @@ void can_convert_root_ptr_to_local_ptr(){
     assert(lp.operator->()==x.get());
 }
 
+void vector_of_internal_ptr(){
+    std::cout<<__FUNCTION__<<std::endl;
+    struct X:jss::internal_base{
+        std::vector<jss::internal_ptr<X>> pointers;
+        Counted data;
+
+        void add(jss::root_ptr<X> p){
+            pointers.emplace_back(this,p);
+        }
+
+        void drop_front(){
+            if(!pointers.empty()){
+                pointers.erase(pointers.begin());
+            }
+        }
+    };
+
+    auto x=jss::make_root<X>();
+
+    x->add(jss::make_root<X>());
+    x->add(jss::make_root<X>());
+    x->add(jss::make_root<X>());
+    
+}
+
 int main(){
     root_ptr_destroys_object_when_destroyed();
     internal_ptr_destroys_object_when_destroyed();
@@ -635,4 +661,5 @@ int main(){
     two_pointers_within_same_object_to_same_other_object();
     can_convert_internal_ptr_to_local_ptr();
     can_convert_root_ptr_to_local_ptr();
+    vector_of_internal_ptr();
 }
