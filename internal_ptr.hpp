@@ -46,8 +46,7 @@ template <class T> class root_ptr;
 template <class T> class internal_ptr;
 class internal_base;
 
-template <typename U, typename... Args>
-root_ptr<U> make_root(Args &&... args);
+template <typename U, typename... Args> root_ptr<U> make_root(Args &&... args);
 
 namespace detail {
 struct root_ptr_data_block_base {};
@@ -89,6 +88,14 @@ template <typename T> struct pointer_set {
         vec.insert(pos, p);
     }
 
+    bool add_unique(T *p) {
+        auto pos = find_bp_pos(vec, p);
+        if ((pos != vec.end()) && (*pos == p))
+            return false;
+        vec.insert(pos, p);
+        return true;
+    }
+
     void remove(T *p) {
         auto pos = find_bp_pos(vec, p);
         if ((pos != vec.end()) && (*pos == p))
@@ -105,6 +112,10 @@ template <typename T> struct pointer_set {
     auto size() const {
         return vec.size();
     }
+
+    void clear() {
+        vec.clear();
+    }
 };
 
 class root_ptr_header_block_base {
@@ -115,6 +126,17 @@ class root_ptr_header_block_base {
     bool deleted;
 
     void check_reachable();
+    static bool check_reachable(
+        pointer_set<root_ptr_header_block_base> &seen_parents,
+        std::vector<root_ptr_header_block_base *> &pending,
+        pointer_set<root_ptr_header_block_base> *unreachable_nodes = nullptr,
+        pointer_set<root_ptr_header_block_base> *owned_nodes = nullptr);
+    void mark_unreachable();
+    static void cleanup_unreachable_nodes(
+        pointer_set<root_ptr_header_block_base> const &seen);
+    static void find_unreachable_children(
+        pointer_set<root_ptr_header_block_base> &seen,
+        std::vector<root_ptr_header_block_base *> &pending);
 
     virtual void do_delete() = 0;
     virtual internal_base *get_internal_base() = 0;
@@ -145,14 +167,17 @@ class root_ptr_header_block_base {
     }
 
     void free_self() {
-        if(unreachable)
+        if (unreachable)
             return;
-        delete_object();
-        delete this;
+        pointer_set<root_ptr_header_block_base> seen;
+        std::vector<root_ptr_header_block_base *> pending;
+        seen.add(this);
+        find_unreachable_children(seen, pending);
+        cleanup_unreachable_nodes(seen);
     }
 
   public:
-    void add_back_pointer(root_ptr_header_block_base *p){
+    void add_back_pointer(root_ptr_header_block_base *p) {
         back_pointers.add(p);
     }
     void reachable_from(internal_base *p);
@@ -165,8 +190,7 @@ class root_ptr_header_block_base {
 
     root_ptr_header_block_base()
         : owner_count(1), internal_count(1), unreachable(false),
-          deleted(false) {
-    }
+          deleted(false) {}
 
     bool is_unreachable() {
         return unreachable;
@@ -193,8 +217,7 @@ class root_ptr_header_block_base {
     }
 };
 
-template <class P>
-struct root_ptr_header_block : root_ptr_header_block_base {};
+template <class P> struct root_ptr_header_block : root_ptr_header_block_base {};
 
 template <typename T,
           bool = std::is_polymorphic<typename std::remove_cv<T>::type>::value>
@@ -216,7 +239,7 @@ template <typename T> internal_base *get_internal_base_impl(T *p) {
 
 template <class P, class D>
 struct root_ptr_header_separate : public root_ptr_header_block<P>,
-                                   private root_ptr_deleter_base<D> {
+                                  private root_ptr_deleter_base<D> {
     P const ptr;
 
     internal_base *get_internal_base() {
@@ -264,11 +287,10 @@ struct root_ptr_header_combined : public root_ptr_header_block<T *> {
 struct internal_ptr_base {
     internal_base *base;
     root_ptr_header_block_base *header;
-    internal_ptr_base* next;
+    internal_ptr_base *next;
 
-    internal_ptr_base(
-        internal_base *base_, root_ptr_header_block_base *header_)
-        : base(base_), header(header_),next(nullptr) {}
+    internal_ptr_base(internal_base *base_, root_ptr_header_block_base *header_)
+        : base(base_), header(header_), next(nullptr) {}
 };
 }
 
@@ -411,8 +433,7 @@ template <class T> class root_ptr {
         return *this;
     }
 
-    template <class Y, class D>
-    root_ptr &operator=(std::unique_ptr<Y, D> &&r) {
+    template <class Y, class D> root_ptr &operator=(std::unique_ptr<Y, D> &&r) {
         root_ptr temp(static_cast<std::unique_ptr<Y> &&>(r));
         swap(temp);
         return *this;
@@ -467,7 +488,7 @@ template <class T> class root_ptr {
 
 class internal_base {
     detail::root_ptr_header_block_base *self_header = nullptr;
-    detail::internal_ptr_base* pointers = nullptr;
+    detail::internal_ptr_base *pointers = nullptr;
 
     template <typename U> friend class internal_ptr;
     template <typename U> friend class root_ptr;
@@ -475,22 +496,23 @@ class internal_base {
 
     void set_self_header(detail::root_ptr_header_block_base *header) {
         self_header = header;
-        for(auto p=pointers;p;p=p->next){
-            if(p->header)
+        for (auto p = pointers; p; p = p->next) {
+            if (p->header)
                 p->header->add_back_pointer(header);
         }
     }
 
     void register_ptr(detail::internal_ptr_base *p) {
-        p->next=pointers;
-        pointers=p;
+        p->next = pointers;
+        pointers = p;
     }
 
     void deregister_ptr(detail::internal_ptr_base *p) {
-        detail::internal_ptr_base** entry=&pointers;
-        while(*entry && (*entry!=p)) entry=&((*entry)->next);
-        if(*entry==p)
-            *entry=p->next;
+        detail::internal_ptr_base **entry = &pointers;
+        while (*entry && (*entry != p))
+            entry = &((*entry)->next);
+        if (*entry == p)
+            *entry = p->next;
         if (p->header)
             p->header->not_reachable_from(this);
     }
@@ -520,28 +542,125 @@ void root_ptr_header_block_base::not_reachable_from(internal_base *p) {
 }
 
 void root_ptr_header_block_base::check_reachable() {
-    if (is_owned())
+    if (is_owned()) {
         return;
+    }
+
     pointer_set<root_ptr_header_block_base> seen;
     std::vector<root_ptr_header_block_base *> pending(1, this);
     seen.add(this);
 
+    if (check_reachable(seen, pending))
+        return;
+    find_unreachable_children(seen, pending);
+    cleanup_unreachable_nodes(seen);
+}
+
+bool root_ptr_header_block_base::check_reachable(
+    pointer_set<root_ptr_header_block_base> &seen_parents,
+    std::vector<root_ptr_header_block_base *> &pending,
+    pointer_set<root_ptr_header_block_base> *unreachable_nodes,
+    pointer_set<root_ptr_header_block_base> *owned_nodes) {
     while (!pending.empty()) {
-        auto next = pending.back();
+        auto node = pending.back();
         pending.pop_back();
+        if (owned_nodes && owned_nodes->contains(node))
+            return true;
+        if (unreachable_nodes && unreachable_nodes->contains(node))
+            continue;
 
-        if (next->is_owned())
-            return;
-
-        for (auto bp : next->back_pointers) {
-            if (seen.contains(bp))
-                continue;
-            seen.add(bp);
-            pending.push_back(bp);
+        if (!node->is_owned()) {
+            for (auto bp : node->back_pointers) {
+                if ((unreachable_nodes && unreachable_nodes->contains(bp)) ||
+                    seen_parents.contains(bp))
+                    continue;
+                if (owned_nodes && owned_nodes->contains(bp)) {
+                    owned_nodes->add_unique(node);
+                    return true;
+                }
+                seen_parents.add(bp);
+                pending.push_back(bp);
+            }
+        } else {
+            if (owned_nodes)
+                owned_nodes->add_unique(node);
+            return true;
         }
     }
+    return false;
+}
+
+void root_ptr_header_block_base::find_unreachable_children(
+    pointer_set<root_ptr_header_block_base> &unreachable_nodes,
+    std::vector<root_ptr_header_block_base *> &nodes_to_check_children) {
+
+    pointer_set<root_ptr_header_block_base> owned_nodes;
+    nodes_to_check_children.assign(
+        unreachable_nodes.begin(), unreachable_nodes.end());
+    pointer_set<root_ptr_header_block_base> seen_parents;
+
+    std::vector<root_ptr_header_block_base *> pending;
+
+    while (!nodes_to_check_children.empty()) {
+        auto next = nodes_to_check_children.back();
+        nodes_to_check_children.pop_back();
+
+        if (auto base = next->get_internal_base()) {
+            auto child = base->pointers;
+            while (child) {
+                auto const child_node = child->header;
+                child = child->next;
+                if (child_node) {
+                    if (unreachable_nodes.contains(child_node) ||
+                        owned_nodes.contains(child_node)) {
+                        continue;
+                    }
+
+                    if (child_node->is_owned()) {
+                        owned_nodes.add(child_node);
+                        continue;
+                    }
+
+                    pending.clear();
+                    seen_parents.clear();
+                    pending.push_back(child_node);
+
+                    if (!check_reachable(
+                            seen_parents, pending, &unreachable_nodes,
+                            &owned_nodes)) {
+                        for (auto p : seen_parents) {
+                            if (unreachable_nodes.add_unique(p))
+                                nodes_to_check_children.push_back(p);
+                        }
+                        if (unreachable_nodes.add_unique(child_node))
+                            nodes_to_check_children.push_back(child_node);
+                    } else {
+                        owned_nodes.add_unique(child_node);
+                    }
+                }
+            }
+        }
+    }
+}
+void root_ptr_header_block_base::mark_unreachable() {
+    unreachable = true;
+    if (auto base = get_internal_base()) {
+        auto child = base->pointers;
+        while (child) {
+            if (auto const child_node = child->header) {
+                --child_node->internal_count;
+                child_node->back_pointers.remove(this);
+                child->header = nullptr;
+            }
+            child = child->next;
+        }
+    }
+}
+
+void root_ptr_header_block_base::cleanup_unreachable_nodes(
+    pointer_set<root_ptr_header_block_base> const &seen) {
     for (auto p : seen) {
-        p->unreachable = true;
+        p->mark_unreachable();
     }
     for (auto p : seen) {
         p->delete_object();
@@ -587,11 +706,11 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 
     internal_ptr(internal_ptr const &) = delete;
-    internal_ptr(internal_ptr&& other):
-        detail::internal_ptr_base(other.base,other.header), ptr(other.ptr){
+    internal_ptr(internal_ptr &&other)
+        : detail::internal_ptr_base(other.base, other.header), ptr(other.ptr) {
         base->register_ptr(this);
-        other.ptr=nullptr;
-        other.header=nullptr;
+        other.ptr = nullptr;
+        other.header = nullptr;
     }
 
     internal_ptr &operator=(root_ptr<T> const &p) {
@@ -605,18 +724,18 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 
     internal_ptr &operator=(internal_ptr const &p) {
-        if((p.header!=header) || (p.ptr!=ptr)){
-            auto temp_header=header;
-            header=p.header;
-            ptr=p.ptr;
-            if(header){
+        if ((p.header != header) || (p.ptr != ptr)) {
+            auto temp_header = header;
+            header = p.header;
+            ptr = p.ptr;
+            if (header) {
                 header->reachable_from(base);
             }
-            
-            if(temp_header)
+
+            if (temp_header)
                 temp_header->not_reachable_from(base);
         }
-        
+
         return *this;
     }
 
@@ -635,7 +754,7 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 
     T *get() const noexcept {
-        return (header && header->is_unreachable()) ? nullptr : ptr;
+        return (!header || header->is_unreachable()) ? nullptr : ptr;
     }
 
     T &operator*() const noexcept {
@@ -655,7 +774,7 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 
     explicit operator bool() const noexcept {
-        return ptr;
+        return get();
     }
 
     ~internal_ptr() {
@@ -663,34 +782,31 @@ template <typename T> class internal_ptr : detail::internal_ptr_base {
     }
 };
 
-template<typename T>
-class local_ptr{
-    T* ptr;
-public:
-    local_ptr(root_ptr<T> const& other) noexcept:
-        ptr(other.get()){}
-    local_ptr(root_ptr<T> const&& other)=delete;
-    local_ptr(internal_ptr<T> const& other) noexcept:
-        ptr(other.get()){}
-    local_ptr(std::nullptr_t) noexcept:
-        ptr(nullptr){}
-    T* operator->() const noexcept{
+template <typename T> class local_ptr {
+    T *ptr;
+
+  public:
+    local_ptr(root_ptr<T> const &other) noexcept : ptr(other.get()) {}
+    local_ptr(root_ptr<T> const &&other) = delete;
+    local_ptr(internal_ptr<T> const &other) noexcept : ptr(other.get()) {}
+    local_ptr(std::nullptr_t) noexcept : ptr(nullptr) {}
+    T *operator->() const noexcept {
         return get();
     }
-    T* get() const noexcept{
+    T *get() const noexcept {
         return ptr;
     }
 
-    T& operator*() const noexcept{
+    T &operator*() const noexcept {
         return *get();
     }
 
-    explicit operator bool() const noexcept{
+    explicit operator bool() const noexcept {
         return get();
     }
 
-    void reset() noexcept{
-        ptr=nullptr;
+    void reset() noexcept {
+        ptr = nullptr;
     }
 };
 
@@ -815,13 +931,11 @@ inline bool operator==(local_ptr<T> const &lhs, local_ptr<T> const &rhs) {
     return lhs.get() == rhs.get();
 }
 
-template <typename T>
-inline bool operator==(local_ptr<T> const &lhs, T *rhs) {
+template <typename T> inline bool operator==(local_ptr<T> const &lhs, T *rhs) {
     return lhs.get() == rhs;
 }
 
-template <typename T>
-inline bool operator==(T *lhs, local_ptr<T> const &rhs) {
+template <typename T> inline bool operator==(T *lhs, local_ptr<T> const &rhs) {
     return lhs == rhs.get();
 }
 
@@ -830,13 +944,11 @@ inline bool operator!=(local_ptr<T> const &lhs, local_ptr<T> const &rhs) {
     return !(lhs == rhs);
 }
 
-template <typename T>
-inline bool operator!=(local_ptr<T> const &lhs, T *rhs) {
+template <typename T> inline bool operator!=(local_ptr<T> const &lhs, T *rhs) {
     return !(lhs == rhs);
 }
 
-template <typename T>
-inline bool operator!=(T *lhs, local_ptr<T> const &rhs) {
+template <typename T> inline bool operator!=(T *lhs, local_ptr<T> const &rhs) {
     return !(lhs == rhs);
 }
 

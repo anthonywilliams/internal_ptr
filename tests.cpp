@@ -641,6 +641,26 @@ void vector_of_internal_ptr(){
     
 }
 
+void pointers_are_null_in_destructor(){
+    std::cout<<__FUNCTION__<<std::endl;
+    struct X:jss::internal_base{
+        jss::internal_ptr<X> p;
+        Counted data;
+
+        X():
+            p(this){}
+
+        ~X(){
+            assert(!p);
+        }
+    };
+
+    X x;
+    x.p=jss::make_root<X>();
+    x.p->p=jss::make_root<X>();
+    x.p.reset();
+}
+
 int main(){
     root_ptr_destroys_object_when_destroyed();
     internal_ptr_destroys_object_when_destroyed();
@@ -662,4 +682,5 @@ int main(){
     can_convert_internal_ptr_to_local_ptr();
     can_convert_root_ptr_to_local_ptr();
     vector_of_internal_ptr();
+    pointers_are_null_in_destructor();
 }
